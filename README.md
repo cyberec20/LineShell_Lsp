@@ -46,5 +46,3 @@ Released under the **GNU 3.0 License** – see [`LICENSE`](LICENSE) for details.
 ## 👤 Author
 
 Developed by [Franklin Rodríguez](https://www.linkedin.com/in/franklinrodriguezacosta)
-
-If you find this tool useful, feel free to connect or leave feedback!
