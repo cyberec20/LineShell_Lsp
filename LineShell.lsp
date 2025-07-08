@@ -49,32 +49,44 @@
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
   
   ;;; Función de manejo de errores
+  ;; Esta función se ejecuta si ocurre un error o si el usuario cancela el comando
   (defun *error* (msg)
+    ;; Si el mensaje no indica una cancelación normal, muestra el error
     (if (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*BREAK*"))
       (princ (strcat "\nError: " msg))
     )
+    ;; Restaura la variable PEDITACCEPT a su valor original si fue guardada
     (if oldPeditAccept (setvar "PEDITACCEPT" oldPeditAccept))
+    ;; Restaura la capa activa original
     (if originalLayer (setvar "CLAYER" originalLayer))
+    ;; Restaura el eco de comandos
     (setvar "CMDECHO" 1)
+    ;; Finaliza la marca de deshacer
     (vla-EndUndoMark doc)
     (princ)
   )
   
-  ;; Desactiva el eco de comandos y guarda la capa activa original
+  ;; Desactiva el eco de comandos para una ejecución más limpia
   (setvar "CMDECHO" 0)
+  ;; Guarda la capa activa original para restaurarla al final
   (setq originalLayer (getvar "CLAYER"))
+  ;; Inicia una marca de deshacer para agrupar todas las operaciones
   (vla-StartUndoMark doc)
+  ;; Guarda el valor actual de PEDITACCEPT y lo configura para evitar confirmaciones
   (setq oldPeditAccept (getvar "PEDITACCEPT"))
-  (setvar "PEDITACCEPT" 1)
-  (setq contourList nil)
-  (setq newEntList nil)
-  (setq modelSpace (vla-get-ModelSpace doc))
+  (setvar "PEDITACCEPT" 1)  ; Desactiva la confirmación de conversión a polilínea
+  ;; Inicializa listas para almacenar contornos cerrados y nuevas entidades
+  (setq contourList nil)     ; Lista para contornos cerrados
+  (setq newEntList nil)      ; Lista de nuevas entidades creadas
+  ;; Obtiene el espacio modelo para agregar hatches posteriormente
+  (setq modelSpace (vla-get-ModelSpace doc)) ; Espacio modelo
   
   ;;; Crear o configurar la capa Defpoints sin cambiar la capa activa
   (setq defpointsLayer "Defpoints")
   (setq layers (vla-get-Layers doc))
   (if (not (tblsearch "LAYER" defpointsLayer))
     (progn
+      ;; Si la capa no existe, la crea con color gris (8) y tipo de línea DASHED
       (setq defpointsLayerObj (vla-Add layers defpointsLayer))
       (vla-put-Color defpointsLayerObj 8)
       (vla-put-Linetype defpointsLayerObj "DASHED")
@@ -83,11 +95,13 @@
     (princ "\nCapa Defpoints ya existe.")
   )
   
-  ;;; Solicitar selección de entidades
+  ;;; Solicitar selección de entidades al usuario
   (princ "\nSeleccione líneas o polilíneas: ")
+  ;; Permite seleccionar solo líneas y polilíneas ligeras
   (setq ss (ssget '((0 . "LINE,LWPOLYLINE"))))
   (if (not ss)
     (progn
+      ;; Si no se seleccionan entidades válidas, termina el comando
       (princ "\nNo se seleccionaron entidades válidas.")
       (vla-EndUndoMark doc)
       (setvar "CMDECHO" 1)
@@ -97,56 +111,72 @@
     )
   )
   
-  ;;; Solicitar distancia de offset
+  ;;; Solicitar distancia de offset al usuario
   (setq dist (getdist "\nDistancia de offset (centro → un lado): "))
+  ;; Asegura que la distancia sea positiva y válida
   (while (or (not dist) (<= dist 0))
     (setq dist (getdist "\nDistancia debe ser positiva: "))
   )
   
+  ;; Convierte el conjunto de selección en una lista de nombres de entidades
   (setq enLst (vl-remove-if 'listp (mapcar 'cadr (ssnamex ss))))
   
   ;;; Procesar cada entidad seleccionada
   (foreach entName enLst
+    ;; Convierte el nombre de entidad a un objeto VLA
     (setq obj (vlax-ename->vla-object entName))
+    ;; Obtiene el tipo de objeto (Line o LWPolyline)
     (setq objType (vla-get-ObjectName obj))
+    ;; Determina si la entidad está cerrada
     (setq isClosed (cond
-                    ((= objType "AcDbLine") nil)
+                    ((= objType "AcDbLine") nil)  ; Las líneas no están cerradas
                     ((= objType "AcDbPolyline") (eq :vlax-true (vla-get-Closed obj)))
                   ))
     
+    ;; Verifica si el método Offset es aplicable al objeto
     (if (vlax-method-applicable-p obj 'Offset)
       (progn
+        ;; Crea offsets en ambos lados de la entidad original
         (setq off1 (vl-catch-all-apply 'vla-offset (list obj dist)))
         (setq off2 (vl-catch-all-apply 'vla-offset (list obj (- dist))))
         
+        ;; Verifica si los offsets se generaron correctamente
         (if (and (not (vl-catch-all-error-p off1)) (not (vl-catch-all-error-p off2)))
           (progn
+            ;; Convierte los resultados de offset a objetos VLA
             (setq off1 (car (vlax-safearray->list (vlax-variant-value off1))))
             (setq off2 (car (vlax-safearray->list (vlax-variant-value off2))))
             
             (if (and off1 off2)
               (progn
+                ;; Convierte los objetos VLA a nombres de entidad
                 (setq off1Ent (vlax-vla-object->ename off1))
                 (setq off2Ent (vlax-vla-object->ename off2))
-                (vla-put-Color off1 4)
-                (vla-put-Color off2 4)
+                ;; Asigna el color cyan y la capa original a los offsets
+                (vla-put-Color off1 4) ; Cyan
+                (vla-put-Color off2 4) ; Cyan
                 (vla-put-Layer off1 originalLayer)
                 (vla-put-Layer off2 originalLayer)
+                ;; Agrega los offsets a la lista de nuevas entidades
                 (setq newEntList (cons off1Ent newEntList))
                 (setq newEntList (cons off2Ent newEntList))
                 
+                ;; Si la entidad no está cerrada, crea líneas de cierre
                 (if (not isClosed)
                   (progn
+                    ;; Obtiene los puntos iniciales y finales de los offsets
                     (setq p1Start (vlax-curve-getStartPoint off1))
                     (setq p2Start (vlax-curve-getStartPoint off2))
                     (setq p1End (vlax-curve-getEndPoint off1))
                     (setq p2End (vlax-curve-getEndPoint off2))
                     
+                    ;; Crea líneas de cierre entre los puntos iniciales y finales
                     (command "_.line" "_non" p1Start "_non" p2Start "")
                     (setq close1 (entlast))
                     (command "_.line" "_non" p1End "_non" p2End "")
                     (setq close2 (entlast))
                     
+                    ;; Asigna color cyan y la capa original a las líneas de cierre
                     (if close1 
                       (progn 
                         (vla-put-Color (vlax-ename->vla-object close1) 4)
@@ -162,6 +192,7 @@
                       )
                     )
                     
+                    ;; Une las entidades para formar un contorno cerrado
                     (if (and off1Ent off2Ent close1 close2)
                       (progn
                         (setq entList (list off1Ent off2Ent close1 close2))
@@ -171,6 +202,7 @@
                         (setq joinedEnt (entlast))
                         (if joinedEnt
                           (progn
+                            ;; Elimina las entidades individuales de la lista y agrega la unida
                             (setq newEntList (vl-remove off1Ent newEntList))
                             (setq newEntList (vl-remove off2Ent newEntList))
                             (setq newEntList (vl-remove close1 newEntList))
@@ -179,6 +211,7 @@
                             (vla-put-Color (vlax-ename->vla-object joinedEnt) 4)
                             (vla-put-Layer (vlax-ename->vla-object joinedEnt) originalLayer)
                             (vla-put-Closed (vlax-ename->vla-object joinedEnt) :vlax-true)
+                            ;; Agrega el contorno cerrado a la lista para hatch
                             (setq contourList (cons joinedEnt contourList))
                           )
                         )
@@ -186,8 +219,9 @@
                     )
                   )
                 )
+                ;; Mueve la entidad original a la capa Defpoints
                 (vla-put-Layer obj defpointsLayer)
-                (vla-put-Color obj 256)
+                (vla-put-Color obj 256) ; Color por capa (BYLAYER)
                 (vla-put-Linetype obj "ByLayer")
                 (princ (strcat "\nContorno creado para entidad " (itoa (vl-position entName enLst))))
               )
@@ -200,37 +234,45 @@
     )
   )
   
-  ;;; Aplicar hatches
+  ;;; Aplicar hatches automáticamente a los contornos cerrados
   (if contourList
     (progn
       (initget "Sí No")
       (setq applyHatch (getkword "\n¿Aplicar hatch a los contornos cerrados? [Sí/No] <Sí>: "))
       (if (or (null applyHatch) (eq applyHatch "Sí"))
         (progn
+          ;; Menú para seleccionar el patrón de hatch
           (initget "SOLID ANSI31 ANSI37 NET ANGLE")
           (setq hatchPattern (getkword "\nSeleccione patrón de hatch [SOLID/ANSI31/ANSI37/NET/ANGLE] <SOLID>: "))
-          (if (not hatchPattern) (setq hatchPattern "SOLID"))
+          (if (not hatchPattern) (setq hatchPattern "SOLID")) ; Patrón por defecto
           
+          ;; Configura la capa y el color del hatch
           (setq hatchLayer originalLayer)
-          (setq hatchColor 4)
+          (setq hatchColor 4) ; Cyan
           
+          ;; Aplica el hatch a cada contorno cerrado
           (foreach cont contourList
             (setq contObj (vlax-ename->vla-object cont))
             (if (eq :vlax-true (vla-get-Closed contObj))
               (progn
+                ;; Crea un objeto hatch en el espacio modelo
                 (setq hatchObj (vla-addhatch modelSpace 
                                              acHatchPatternTypePredefined 
                                              hatchPattern 
                                              :vlax-true 
                                              acHatchObject))
+                ;; Convierte el contorno a un array seguro para ActiveX
                 (setq contArray (vlax-make-safearray vlax-vbObject '(0 . 0)))
                 (vlax-safearray-put-element contArray 0 contObj)
+                ;; Define el contorno como bucle externo del hatch
                 (vla-appendouterloop hatchObj contArray)
+                ;; Configura propiedades del hatch
                 (vla-put-patternscale hatchObj 1.0)
                 (vla-put-patternangle hatchObj 0.0)
                 (vla-put-color hatchObj hatchColor)
                 (vla-put-layer hatchObj hatchLayer)
                 (vla-evaluate hatchObj)
+                ;; Agrega el hatch a la lista de nuevas entidades
                 (setq hatchEnt (vlax-vla-object->ename hatchObj))
                 (setq newEntList (cons hatchEnt newEntList))
               )
@@ -242,16 +284,18 @@
     )
   )
   
-  ;;; Opción para crear un bloque
+  ;;; Opción para crear un bloque con las nuevas entidades
   (if newEntList
     (progn
       (initget "Sí No")
       (setq createBlock (getkword "\n¿Crear bloque con nuevas entidades? [Sí/No] <No>: "))
       (if (and createBlock (eq createBlock "Sí"))
         (progn
+          ;; Solicita el nombre del bloque y el punto base
           (setq blkName (getstring t "\nNombre del bloque: "))
           (setq basePt (getpoint "\nPunto base de inserción: "))
           (setq ssBlock (ssadd))
+          ;; Agrega todas las nuevas entidades al conjunto de selección
           (foreach ent newEntList (ssadd ent ssBlock))
           (command "_.-block" blkName "_non" basePt ssBlock "")
           (princ (strcat "\nBloque '" blkName "' creado con éxito."))
@@ -262,10 +306,10 @@
   )
   
   ;;; Finalizar el comando
-  (setvar "PEDITACCEPT" oldPeditAccept)
-  (vla-EndUndoMark doc)
-  (setvar "CLAYER" originalLayer)
-  (setvar "CMDECHO" 1)
+  (setvar "PEDITACCEPT" oldPeditAccept) ; Restaura el valor original
+  (vla-EndUndoMark doc)                 ; Cierra la marca de deshacer
+  (setvar "CLAYER" originalLayer)       ; Restaura la capa activa original
+  (setvar "CMDECHO" 1)                  ; Restaura el eco de comandos
   (princ "\nProceso completado.")
   (princ)
 )
